@@ -1,0 +1,322 @@
+from __future__ import annotations
+
+import logging
+
+import torch
+from torch import nn
+
+from medjepa.data import build_data_bundle, set_sampler_epoch
+from medjepa.models.ijepa import build_ijepa
+from medjepa.training.checkpoint import load_checkpoint, save_checkpoint
+from medjepa.training.distributed import (
+    DistributedEnvironment,
+    barrier,
+    cleanup_distributed,
+    init_distributed,
+    unwrap_ddp,
+    wrap_ddp,
+)
+from medjepa.training.optim import build_optimizer, build_scheduler
+from medjepa.training.precision import PrecisionManager
+from medjepa.training.profiler import make_profiler
+from medjepa.training.runtime import (
+    configure_logging,
+    make_run_dir,
+    make_tracker,
+    resolve_config,
+    save_resolved_config,
+    training_parser,
+)
+from medjepa.utils import environment_summary, parameter_count, seed_everything
+
+
+LOGGER = logging.getLogger(__name__)
+
+
+def train_one_epoch(
+    *,
+    student: nn.Module,
+    target_encoder: nn.Module,
+    loader: object,
+    optimizer: torch.optim.Optimizer,
+    scheduler: object,
+    precision: PrecisionManager,
+    cfg: object,
+    env: DistributedEnvironment,
+    tracker: object,
+    profiler: object,
+    epoch: int,
+    global_step: int,
+    total_steps: int,
+    max_steps: int | None,
+) -> tuple[int, bool, dict[str, float]]:
+    """Train the I-JEPA student for one epoch or until the global step limit.
+
+    Args:
+        student: IJEPAStudent, possibly DDP-wrapped; predicts (T * M * B, Kt, D).
+        target_encoder: Frozen teacher producing full-image tokens (B, N, D).
+        loader: Sized iterable of dictionaries containing "images" (B, 3, H, H),
+            "labels" (B,), "context_masks" (M tensors of shape (B, Kc)), and
+            "target_masks" (T tensors of shape (B, Kt)). Labels are unused.
+        optimizer: Optimizer for the trainable model parameters.
+        scheduler: Learning-rate scheduler exposing value(step) and step(step).
+        precision: PrecisionManager for autocast, backward, gradient preparation,
+            and optimizer stepping.
+        cfg: Resolved config; optimization controls accumulation, precision and
+            clipping, and tracking.log_every_steps controls reporting frequency.
+        env: DistributedEnvironment providing device, rank, world_size, and is_main.
+        tracker: Logger with log(metrics, step); emit logs only on the main rank.
+        profiler: Active profiler (or no-op profiler) with step().
+        epoch: Zero-based epoch index for reporting.
+        global_step: Number of optimizer steps before this call, not minibatches.
+        total_steps: Planned total optimizer steps used for the EMA schedule;
+            cfg.optimization.ema_start and ema_end specify its momentum endpoints.
+        max_steps: Absolute global optimizer-step limit, or None for no limit.
+
+    Returns:
+        (new_global_step, epoch_completed, epoch_metrics). The step count
+        includes this call's optimizer steps. epoch_completed is True only if
+        the whole loader was consumed, including when the limit hits its end.
+        epoch_metrics is a dict of Python floats with "train/loss" as the
+        mean latent regression loss for the processed portion of the epoch.
+
+    Side effects:
+        Update student/optimizer/precision state and teacher EMA; step the LR
+        scheduler and profiler and emit metrics. Use student train mode, teacher
+        eval mode and detached teacher targets. Handle the final partial gradient
+        accumulation group. Reduce detached statistics across ranks for reporting.
+    """
+    # TODO 30:
+    # - enter train/eval modes and clear gradients;
+    # - move each collated batch to the local device;
+    # - obtain detached target-region representations;
+    # - predict those representations from context tokens;
+    # - compute latent regression loss and optimize the student;
+    # - update the target encoder by EMA after optimizer steps;
+    # - handle accumulation, loss/feature/timing logging, profiler stepping, and max_steps.
+    student.train()
+    target_encoder.eval()
+    accumulation = int(cfg.optimization.gradient_accumulation_steps)
+    clip = getattr(cfg.optimization, "gradient_clip_norm", None)
+    clip = None if clip is None else float(clip)
+    log_every = int(cfg.tracking.log_every_steps)
+    loss_average = RunningAverage()
+    optimizer.zero_grad(set_to_none=True)
+    group_loss = 0.0
+    group_examples = 0
+    group_data_time = 0.0
+    previous_iteration_end = time.perf_counter()
+    group_start_time = previous_iteration_end
+    group_lr = scheduler.value(global_step)
+    last_features: torch.Tensor | None = None
+    epoch_completed = True
+
+    for batch_index, batch in enumerate(loader):
+        batch_ready_time = time.perf_counter()
+        batch_data_time = batch_ready_time - previous_iteration_end
+        group_start_index = (batch_index // accumulation) * accumulation
+        group_size = min(accumulation, len(loader) - group_start_index)
+        is_group_start = batch_index == group_start_index
+        is_group_end = (batch_index + 1) == (group_start_index + group_size)
+        if is_group_start:
+            group_loss = 0.0
+            group_examples = 0
+            group_data_time = 0.0
+            group_start_time = previous_iteration_end
+            group_lr = scheduler.step(global_step)
+        group_data_time += batch_data_time
+
+        batch = move_ijepa_batch(batch, env.device)
+        images = batch["images"]
+        context_masks = batch["context_masks"]
+        target_masks = batch["target_masks"]
+
+        with _sync_context(student, is_group_end):
+            with precision.autocast():
+                with torch.no_grad():
+                    full_target_tokens = target_encoder.forward_tokens(images)
+                    full_target_tokens = F.layer_norm(
+                        full_target_tokens, (full_target_tokens.shape[-1],)
+                    )
+                    targets = extract_target_tokens(
+                        full_target_tokens, context_masks, target_masks
+                    )
+                predictions = student(images, context_masks, target_masks)
+                if predictions.shape != targets.shape:
+                    raise RuntimeError(
+                        f"Prediction/target mismatch: {predictions.shape} vs {targets.shape}"
+                    )
+                raw_loss = F.smooth_l1_loss(predictions, targets)
+                loss = raw_loss / group_size
+            if not torch.isfinite(raw_loss):
+                raise FloatingPointError(f"Non-finite I-JEPA loss: {raw_loss.item()}")
+            precision.backward(loss)
+
+        group_loss += float(raw_loss.detach().item())
+        group_examples += int(images.shape[0])
+        last_features = full_target_tokens.detach().mean(dim=1)
+        profiler.step()
+
+        if not is_group_end:
+            previous_iteration_end = time.perf_counter()
+            continue
+
+        precision.prepare_gradients(optimizer, student, clip)
+        grad_norm = gradient_norm(student)
+        precision.step(optimizer)
+        optimizer.zero_grad(set_to_none=True)
+
+        unwrapped = unwrap_ddp(student)
+        momentum = ema_momentum(
+            global_step,
+            total_steps,
+            float(cfg.optimization.ema_start),
+            float(cfg.optimization.ema_end),
+        )
+        update_target_encoder(unwrapped.context_encoder, target_encoder, momentum)
+        global_step += 1
+        synchronize_device(env.device)
+        group_end_time = time.perf_counter()
+        elapsed = max(group_end_time - group_start_time, 1e-9)
+        previous_iteration_end = group_end_time
+
+        step_loss = _reduced_float(group_loss / group_size, env)
+        step_grad = _reduced_float(grad_norm, env)
+        step_seconds = _reduced_max_float(elapsed, env)
+        data_seconds = _reduced_max_float(group_data_time, env)
+        step_throughput = group_examples * env.world_size / step_seconds
+        loss_average.update(step_loss)
+
+        if global_step == 1 or global_step % log_every == 0:
+            diagnostics = feature_diagnostics(last_features)
+            diagnostics = {
+                key: _reduced_float(value, env) for key, value in diagnostics.items()
+            }
+            peak_memory = _reduced_max_float(peak_memory_mb(env.device), env)
+            metrics = {
+                "train/loss": step_loss,
+                "train/lr": group_lr,
+                "train/ema_momentum": momentum,
+                "train/grad_norm": step_grad,
+                "train/images_per_second": step_throughput,
+                "train/step_seconds": step_seconds,
+                "train/data_seconds": data_seconds,
+                "train/data_fraction": min(data_seconds / step_seconds, 1.0),
+                "train/peak_memory_mb": peak_memory,
+                "train/context_patches": int(context_masks[0].shape[1]),
+                "train/target_patches": int(target_masks[0].shape[1]),
+                "train/epoch": epoch + 1,
+                **diagnostics,
+            }
+            tracker.log(metrics, global_step)
+            if env.is_main:
+                LOGGER.info(
+                    "epoch=%d step=%d loss=%.5f lr=%.2e ema=%.5f img/s=%.1f "
+                    "data=%.3fs step=%.3fs mem=%.0fMB",
+                    epoch + 1,
+                    global_step,
+                    step_loss,
+                    group_lr,
+                    momentum,
+                    step_throughput,
+                    data_seconds,
+                    step_seconds,
+                    metrics["train/peak_memory_mb"],
+                )
+
+        if max_steps is not None and global_step >= max_steps:
+            epoch_completed = batch_index == len(loader) - 1
+            break
+
+    return global_step, epoch_completed, {"train/loss": loss_average.average}
+
+
+def main() -> None:
+    args = training_parser("Train the exercise I-JEPA implementation").parse_args()
+    cfg = resolve_config(args.config, args.override)
+    if cfg.algorithm != "ijepa":
+        raise ValueError("The selected config is not an I-JEPA config")
+    env = init_distributed()
+    configure_logging(env)
+    seed_everything(int(cfg.experiment.seed))
+    run_dir = make_run_dir(cfg)
+    save_resolved_config(cfg, run_dir, env)
+
+    data = build_data_bundle(cfg, "ijepa", env)
+    student, target_encoder = build_ijepa(cfg)
+    student.to(env.device)
+    target_encoder.to(env.device)
+    optimizer = build_optimizer(student, cfg.optimization)
+    accumulation = int(cfg.optimization.gradient_accumulation_steps)
+    steps_per_epoch = (len(data.train_loader) + accumulation - 1) // accumulation
+    planned_steps = steps_per_epoch * int(cfg.optimization.epochs)
+    total_steps = min(planned_steps, args.max_steps) if args.max_steps else planned_steps
+    scheduler = build_scheduler(optimizer, cfg.optimization, steps_per_epoch, total_steps)
+    precision = PrecisionManager(str(cfg.optimization.precision), env.device)
+
+    start_epoch = 0
+    global_step = 0
+    if args.resume:
+        checkpoint = load_checkpoint(args.resume, env.device)
+        student.load_state_dict(checkpoint["student"])
+        target_encoder.load_state_dict(checkpoint["target_encoder"])
+        optimizer.load_state_dict(checkpoint["optimizer"])
+        precision.scaler.load_state_dict(checkpoint.get("scaler", {}))
+        start_epoch = int(checkpoint["epoch"])
+        global_step = int(checkpoint["global_step"])
+
+    student = wrap_ddp(student, env)
+    tracker = make_tracker(cfg, run_dir, env)
+    profiler = make_profiler(cfg.profiler, run_dir, env.rank)
+    if env.is_main:
+        LOGGER.info("Student parameters: %s", f"{parameter_count(unwrap_ddp(student)):,}")
+        LOGGER.info("Device: %s | world size: %d", env.device, env.world_size)
+
+    try:
+        with profiler:
+            for epoch in range(start_epoch, int(cfg.optimization.epochs)):
+                set_sampler_epoch(data.train_sampler, epoch)
+                global_step, completed, metrics = train_one_epoch(
+                    student=student,
+                    target_encoder=target_encoder,
+                    loader=data.train_loader,
+                    optimizer=optimizer,
+                    scheduler=scheduler,
+                    precision=precision,
+                    cfg=cfg,
+                    env=env,
+                    tracker=tracker,
+                    profiler=profiler,
+                    epoch=epoch,
+                    global_step=global_step,
+                    total_steps=total_steps,
+                    max_steps=args.max_steps,
+                )
+                if env.is_main:
+                    payload = {
+                        "algorithm": "ijepa",
+                        "implementation": "exercise",
+                        "config": cfg.to_dict(),
+                        "environment": environment_summary(),
+                        "epoch": epoch + int(completed),
+                        "global_step": global_step,
+                        "student": unwrap_ddp(student).state_dict(),
+                        "target_encoder": target_encoder.state_dict(),
+                        "optimizer": optimizer.state_dict(),
+                        "scaler": precision.scaler.state_dict(),
+                        "epoch_metrics": metrics,
+                    }
+                    save_checkpoint(run_dir / "latest.pt", payload)
+                    every = int(cfg.checkpoint.every_epochs)
+                    if completed and every > 0 and (epoch + 1) % every == 0:
+                        save_checkpoint(run_dir / f"epoch-{epoch + 1:04d}.pt", payload)
+                barrier()
+                if args.max_steps is not None and global_step >= args.max_steps:
+                    break
+    finally:
+        tracker.finish()
+        cleanup_distributed()
+
+
+if __name__ == "__main__":
+    main()

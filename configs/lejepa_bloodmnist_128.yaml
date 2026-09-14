@@ -1,0 +1,68 @@
+experiment:
+  run_name: lejepa-bloodmnist-128
+  output_dir: outputs
+  seed: 42
+
+algorithm: lejepa
+
+data:
+  dataset: bloodmnist
+  root: data/medmnist
+  image_size: 128
+  download: true
+  batch_size: 32              # per GPU/process; four views are encoded
+  num_workers: 8
+  pin_memory: true
+  persistent_workers: true
+  train_fraction: 1.0
+  views:
+    count: 4
+    crop_scale: [0.25, 1.00]
+    crop_ratio: [0.75, 1.33]
+    horizontal_flip: 0.5
+    color_jitter: 0.20
+    grayscale: 0.0
+
+model:
+  patch_size: 8
+  embed_dim: 256
+  depth: 6
+  num_heads: 8
+  mlp_ratio: 4.0
+  dropout: 0.0
+  projection_dim: 128
+  projection_hidden_dim: 1024
+
+sigreg:
+  weight: 0.05
+  num_slices: 128
+  t_max: 3.0
+  num_points: 17
+  seed: 1729
+
+optimization:
+  epochs: 100
+  learning_rate: 0.0003
+  min_learning_rate: 0.000001
+  warmup_epochs: 5
+  weight_decay: 0.05
+  gradient_accumulation_steps: 1
+  gradient_clip_norm: null
+  precision: bf16
+
+tracking:
+  backend: trackio
+  project: medical-jepa-lab
+  space_id: null
+  log_every_steps: 10
+
+checkpoint:
+  every_epochs: 5
+  keep_last: true
+
+profiler:
+  enabled: false
+  wait: 2
+  warmup: 2
+  active: 4
+  repeat: 1

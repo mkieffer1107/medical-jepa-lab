@@ -1,0 +1,71 @@
+experiment:
+  run_name: ijepa-bloodmnist-128
+  output_dir: outputs
+  seed: 42
+
+algorithm: ijepa
+
+data:
+  dataset: bloodmnist
+  root: data/medmnist
+  image_size: 128
+  download: true
+  batch_size: 64              # per GPU/process
+  num_workers: 8
+  pin_memory: true
+  persistent_workers: true
+  train_fraction: 1.0
+  augmentation:
+    crop_scale: [0.60, 1.00]
+    crop_ratio: [0.90, 1.10]
+    horizontal_flip: 0.0
+    color_jitter: 0.0
+
+model:
+  patch_size: 8
+  embed_dim: 256
+  depth: 6
+  num_heads: 8
+  mlp_ratio: 4.0
+  dropout: 0.0
+  predictor_dim: 192
+  predictor_depth: 4
+  predictor_heads: 6
+
+mask:
+  num_context_masks: 1
+  num_target_masks: 4
+  context_scale: [0.85, 1.00]
+  target_scale: [0.15, 0.20]
+  target_aspect_ratio: [0.75, 1.50]
+  min_keep: 8
+  allow_overlap: false
+
+optimization:
+  epochs: 100
+  learning_rate: 0.0003
+  min_learning_rate: 0.000001
+  warmup_epochs: 5
+  weight_decay: 0.05
+  gradient_accumulation_steps: 1
+  gradient_clip_norm: null
+  precision: bf16
+  ema_start: 0.996
+  ema_end: 1.0
+
+tracking:
+  backend: trackio             # trackio | jsonl | none
+  project: medical-jepa-lab
+  space_id: null
+  log_every_steps: 10
+
+checkpoint:
+  every_epochs: 5
+  keep_last: true
+
+profiler:
+  enabled: false
+  wait: 2
+  warmup: 2
+  active: 4
+  repeat: 1

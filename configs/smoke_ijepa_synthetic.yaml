@@ -1,0 +1,63 @@
+experiment:
+  run_name: smoke-ijepa-synthetic
+  output_dir: outputs
+  seed: 7
+algorithm: ijepa
+data:
+  dataset: synthetic
+  root: data
+  image_size: 32
+  download: false
+  batch_size: 8
+  num_workers: 0
+  pin_memory: false
+  persistent_workers: false
+  train_fraction: 1.0
+  synthetic_train_samples: 64
+  synthetic_val_samples: 24
+  synthetic_test_samples: 24
+  synthetic_classes: 4
+  augmentation:
+    crop_scale: [0.80, 1.00]
+    crop_ratio: [0.90, 1.10]
+    horizontal_flip: 0.0
+    color_jitter: 0.0
+model:
+  patch_size: 8
+  embed_dim: 64
+  depth: 2
+  num_heads: 4
+  mlp_ratio: 2.0
+  dropout: 0.0
+  predictor_dim: 48
+  predictor_depth: 2
+  predictor_heads: 4
+mask:
+  num_context_masks: 1
+  num_target_masks: 2
+  context_scale: [0.60, 0.90]
+  target_scale: [0.15, 0.25]
+  target_aspect_ratio: [0.75, 1.50]
+  min_keep: 2
+  allow_overlap: false
+optimization:
+  epochs: 2
+  learning_rate: 0.001
+  min_learning_rate: 0.00001
+  warmup_epochs: 0
+  weight_decay: 0.01
+  gradient_accumulation_steps: 1
+  gradient_clip_norm: null
+  precision: fp32
+  ema_start: 0.90
+  ema_end: 0.99
+tracking:
+  backend: jsonl
+  project: medical-jepa-lab
+  space_id: null
+  log_every_steps: 1
+checkpoint:
+  every_epochs: 1
+  keep_last: true
+profiler:
+  enabled: false

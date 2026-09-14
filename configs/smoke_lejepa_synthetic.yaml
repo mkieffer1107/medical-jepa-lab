@@ -1,0 +1,60 @@
+experiment:
+  run_name: smoke-lejepa-synthetic
+  output_dir: outputs
+  seed: 7
+algorithm: lejepa
+data:
+  dataset: synthetic
+  root: data
+  image_size: 32
+  download: false
+  batch_size: 8
+  num_workers: 0
+  pin_memory: false
+  persistent_workers: false
+  train_fraction: 1.0
+  synthetic_train_samples: 64
+  synthetic_val_samples: 24
+  synthetic_test_samples: 24
+  synthetic_classes: 4
+  views:
+    count: 3
+    crop_scale: [0.70, 1.00]
+    crop_ratio: [0.90, 1.10]
+    horizontal_flip: 0.5
+    color_jitter: 0.10
+    grayscale: 0.0
+model:
+  patch_size: 8
+  embed_dim: 64
+  depth: 2
+  num_heads: 4
+  mlp_ratio: 2.0
+  dropout: 0.0
+  projection_dim: 32
+  projection_hidden_dim: 128
+sigreg:
+  weight: 0.05
+  num_slices: 32
+  t_max: 3.0
+  num_points: 17
+  seed: 1729
+optimization:
+  epochs: 2
+  learning_rate: 0.001
+  min_learning_rate: 0.00001
+  warmup_epochs: 0
+  weight_decay: 0.01
+  gradient_accumulation_steps: 1
+  gradient_clip_norm: null
+  precision: fp32
+tracking:
+  backend: jsonl
+  project: medical-jepa-lab
+  space_id: null
+  log_every_steps: 1
+checkpoint:
+  every_epochs: 1
+  keep_last: true
+profiler:
+  enabled: false
