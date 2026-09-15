@@ -6,6 +6,29 @@ from medjepa.config import load_config
 from medjepa.data import build_data_bundle
 
 
+def test_medmnist_creates_missing_root_before_loading(tmp_path, monkeypatch) -> None:
+    from pathlib import Path
+
+    import medmnist
+
+    from medjepa.data.datasets import _medmnist_dataset
+
+    root = tmp_path / "missing" / "medmnist"
+
+    class FakeBloodMNIST:
+        def __init__(self, **kwargs):
+            assert Path(kwargs["root"]).is_dir()
+            assert kwargs["download"] is True
+
+        def __len__(self):
+            return 3
+
+    monkeypatch.setattr(medmnist, "BloodMNIST", FakeBloodMNIST)
+    dataset, info = _medmnist_dataset("bloodmnist", "train", root, 128, True, None)
+    assert len(dataset) == 3
+    assert info.name == "bloodmnist"
+
+
 @dataclass(frozen=True)
 class LocalEnvironment:
     distributed: bool = False

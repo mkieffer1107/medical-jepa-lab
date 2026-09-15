@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import math
 from dataclasses import dataclass
 from pathlib import Path
@@ -9,6 +10,9 @@ import numpy as np
 import torch
 from PIL import Image, ImageDraw
 from torch.utils.data import Dataset, Subset
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -130,6 +134,12 @@ def _medmnist_dataset(
     if "multi-label" in task:
         raise ValueError(f"{name} is multi-label; this lab's evaluator expects one class per image")
     dataset_class = getattr(medmnist, metadata["python_class"])
+    root = Path(root).expanduser().resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    LOGGER.info(
+        "Loading %s split=%s size=%d root=%s (download enabled=%s)",
+        name, split, image_size, root, download,
+    )
     dataset = dataset_class(
         split=split,
         root=str(root),
@@ -194,4 +204,5 @@ def build_dataset(cfg: object, split: str, transform: Callable) -> tuple[Dataset
         generator = torch.Generator().manual_seed(0)
         indices = torch.randperm(len(dataset), generator=generator)[:keep].tolist()
         dataset = Subset(dataset, indices)
+    LOGGER.info("Dataset ready: %s split=%s samples=%d", info.name, split, len(dataset))
     return dataset, info

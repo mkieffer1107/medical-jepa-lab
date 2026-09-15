@@ -1,36 +1,71 @@
 from __future__ import annotations
 
 import logging
+import time
+from contextlib import nullcontext
 
 import torch
+import torch.nn.functional as F
 from torch import nn
+from torch.nn.parallel import DistributedDataParallel
 
 from medjepa.data import build_data_bundle, set_sampler_epoch
-from medjepa.models.ijepa import build_ijepa
 from medjepa.training.checkpoint import load_checkpoint, save_checkpoint
 from medjepa.training.distributed import (
     DistributedEnvironment,
     barrier,
     cleanup_distributed,
     init_distributed,
+    reduce_max,
+    reduce_mean,
     unwrap_ddp,
     wrap_ddp,
 )
-from medjepa.training.optim import build_optimizer, build_scheduler
+from medjepa.training.metrics import RunningAverage, feature_diagnostics
+from medjepa.training.optim import (
+    build_optimizer,
+    build_scheduler,
+    ema_momentum,
+    gradient_norm,
+)
 from medjepa.training.precision import PrecisionManager
 from medjepa.training.profiler import make_profiler
 from medjepa.training.runtime import (
     configure_logging,
     make_run_dir,
     make_tracker,
+    move_ijepa_batch,
+    peak_memory_mb,
     resolve_config,
     save_resolved_config,
+    synchronize_device,
     training_parser,
 )
 from medjepa.utils import environment_summary, parameter_count, seed_everything
+from medjepa.models.ijepa import (
+    build_ijepa,
+    extract_target_tokens,
+    update_target_encoder,
+)
 
 
 LOGGER = logging.getLogger(__name__)
+
+
+def _sync_context(model: nn.Module, should_sync: bool):
+    if isinstance(model, DistributedDataParallel) and not should_sync:
+        return model.no_sync()
+    return nullcontext()
+
+
+def _reduced_float(value: float, env: DistributedEnvironment) -> float:
+    tensor = torch.tensor(value, device=env.device, dtype=torch.float32)
+    return float(reduce_mean(tensor, env).item())
+
+
+def _reduced_max_float(value: float, env: DistributedEnvironment) -> float:
+    tensor = torch.tensor(value, device=env.device, dtype=torch.float32)
+    return float(reduce_max(tensor, env).item())
 
 
 def train_one_epoch(
@@ -242,8 +277,10 @@ def main() -> None:
     run_dir = make_run_dir(cfg)
     save_resolved_config(cfg, run_dir, env)
 
-    data = build_data_bundle(cfg, "ijepa", env)
+    LOGGER.info("Building I-JEPA model")
     student, target_encoder = build_ijepa(cfg)
+    LOGGER.info("Preparing data loaders")
+    data = build_data_bundle(cfg, "ijepa", env)
     student.to(env.device)
     target_encoder.to(env.device)
     optimizer = build_optimizer(student, cfg.optimization)
@@ -275,6 +312,7 @@ def main() -> None:
     try:
         with profiler:
             for epoch in range(start_epoch, int(cfg.optimization.epochs)):
+                LOGGER.info("Epoch %d/%d starting | batches=%d | waiting for first batch", epoch + 1, int(cfg.optimization.epochs), len(data.train_loader))
                 set_sampler_epoch(data.train_sampler, epoch)
                 global_step, completed, metrics = train_one_epoch(
                     student=student,
@@ -292,6 +330,7 @@ def main() -> None:
                     total_steps=total_steps,
                     max_steps=args.max_steps,
                 )
+                LOGGER.info("Epoch %d finished: step=%d loss=%.5f completed=%s", epoch + 1, global_step, metrics["train/loss"], completed)
                 if env.is_main:
                     payload = {
                         "algorithm": "ijepa",
@@ -313,6 +352,7 @@ def main() -> None:
                 barrier()
                 if args.max_steps is not None and global_step >= args.max_steps:
                     break
+        LOGGER.info("Training finished at step %d | outputs=%s", global_step, run_dir.resolve())
     finally:
         tracker.finish()
         cleanup_distributed()

@@ -234,8 +234,10 @@ def main() -> None:
     run_dir = make_run_dir(cfg)
     save_resolved_config(cfg, run_dir, env)
 
-    data = build_data_bundle(cfg, "ijepa", env)
+    LOGGER.info("Building I-JEPA model")
     student, target_encoder = build_ijepa(cfg)
+    LOGGER.info("Preparing data loaders")
+    data = build_data_bundle(cfg, "ijepa", env)
     student.to(env.device)
     target_encoder.to(env.device)
     optimizer = build_optimizer(student, cfg.optimization)
@@ -276,6 +278,7 @@ def main() -> None:
     try:
         with profiler:
             for epoch in range(start_epoch, int(cfg.optimization.epochs)):
+                LOGGER.info("Epoch %d/%d starting | batches=%d | waiting for first batch", epoch + 1, int(cfg.optimization.epochs), len(data.train_loader))
                 set_sampler_epoch(data.train_sampler, epoch)
                 global_step, completed, metrics = train_one_epoch(
                     student=student,
@@ -293,6 +296,7 @@ def main() -> None:
                     total_steps=total_steps,
                     max_steps=args.max_steps,
                 )
+                LOGGER.info("Epoch %d finished: step=%d loss=%.5f completed=%s", epoch + 1, global_step, metrics["train/loss"], completed)
                 if env.is_main:
                     payload = {
                         "algorithm": "ijepa",
@@ -314,6 +318,7 @@ def main() -> None:
                 barrier()
                 if args.max_steps is not None and global_step >= args.max_steps:
                     break
+        LOGGER.info("Training finished at step %d | outputs=%s", global_step, run_dir.resolve())
     finally:
         tracker.finish()
         cleanup_distributed()

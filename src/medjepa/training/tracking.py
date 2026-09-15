@@ -29,6 +29,7 @@ class Tracker:
         self.jsonl_path = self.run_dir / "metrics.jsonl"
         self._trackio = None
         if self.backend == "trackio":
+            LOGGER.info("Initializing Trackio: project=%s run=%s space=%s", project, run_name, space_id or "local")
             try:
                 import trackio
 
@@ -41,11 +42,14 @@ class Tracker:
                     kwargs["space_id"] = space_id
                 trackio.init(**kwargs)
                 self._trackio = trackio
+                LOGGER.info("Trackio ready")
             except Exception as exc:  # network/auth failure should not abort training
                 LOGGER.warning("Trackio initialization failed; continuing with JSONL: %s", exc)
                 self.backend = "jsonl"
         elif self.backend not in {"jsonl", "none"}:
             raise ValueError(f"Unknown tracking backend: {backend}")
+        if self.enabled:
+            LOGGER.info("Metrics backend=%s | local metrics=%s", self.backend, self.jsonl_path.resolve())
 
     def log(self, metrics: dict[str, Any], step: int) -> None:
         if not self.enabled:

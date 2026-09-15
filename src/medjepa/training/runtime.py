@@ -48,6 +48,14 @@ def make_run_dir(cfg: Config) -> Path:
 def save_resolved_config(cfg: Config, run_dir: Path, env: DistributedEnvironment) -> None:
     if not env.is_main:
         return
+    log_path = (run_dir / "training.log").resolve()
+    handler = logging.FileHandler(log_path, encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(message)s"))
+    logging.getLogger().addHandler(handler)
+    logging.getLogger(__name__).info(
+        "Starting %s run=%s device=%s world_size=%d | log=%s",
+        cfg.algorithm, cfg.experiment.run_name, env.device, env.world_size, log_path,
+    )
     with (run_dir / "config.resolved.yaml").open("w", encoding="utf-8") as handle:
         yaml.safe_dump(cfg.to_dict(), handle, sort_keys=False)
 
