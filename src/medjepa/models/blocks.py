@@ -397,12 +397,12 @@ class TinyVisionTransformer(nn.Module):
     def _initialize_weights(self) -> None:
         nn.init.trunc_normal_(self.patch_embedding.projection.weight, std=0.02)
         if self.patch_embedding.projection.bias is not None:
-            nn.init_zeros_(self.patch_embedding.projection.bias)
+            nn.init.zeros_(self.patch_embedding.projection.bias)
         for module in self.modules():
             if isinstance(module, nn.Linear):
                 nn.init.trunc_normal_(module.weight, std=0.02)
                 if module.bias is not None:
-                    nn.init_zeros_(module.bias)
+                    nn.init.zeros_(module.bias)
             elif isinstance(module, nn.LayerNorm):
                 # set to 1 and 0 so that LN initially does pure z-score normalization.
                 # once weights update it will scale norm by weights and add on bias ofc
