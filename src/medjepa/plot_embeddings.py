@@ -14,6 +14,7 @@ from sklearn.manifold import TSNE
 from medjepa.config import _as_config, apply_override, validate_config
 from medjepa.data import build_evaluation_bundle
 from medjepa.embedding_report import plot_3d, write_interactive_report
+from medjepa.embedding_clusters import cluster_embeddings, export_samples
 from medjepa.evaluate import _load_encoder, _plot_projection, extract_embeddings, resolve_device
 from medjepa.training.checkpoint import load_checkpoint
 from medjepa.utils import ensure_dir, write_json
@@ -75,8 +76,12 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int)
     parser.add_argument("--max-train", type=int)
     parser.add_argument("--max-test", type=int)
+    parser.add_argument("--clusters", type=int, default=9, help="K-means clusters in full encoder space")
+    parser.add_argument("--cluster-examples", type=int, default=6, help="Representative images per cluster (at least 2)")
     parser.add_argument("--override", action="append", default=[], help="E.g. data.num_workers=0")
     args = parser.parse_args()
+    if args.clusters < 1 or args.cluster_examples < 2:
+        parser.error("--clusters must be positive and --cluster-examples must be at least 2")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
     for option in ("batch_size", "max_train", "max_test"):
         value = getattr(args, option)
@@ -120,17 +125,27 @@ def main() -> None:
     plot_3d(tsne3, test_y, data.info.class_names,
             f"{algorithm.upper()} | test embeddings | 3D t-SNE", tsne_image3, prefix="t-SNE")
     report = output / "embeddings.html"
+    assignments, clusters = cluster_embeddings(test_x, test_y, data.info.class_names,
+                                               args.clusters, args.cluster_examples, int(cfg.experiment.seed))
+    samples = export_samples(data.test_loader.dataset, test_y, data.info.name, int(cfg.data.image_size))
+    write_json(output / "clusters.json", clusters)
+    write_json(output / "samples.json", {**samples, "samples": [{k: v for k, v in sample.items() if k != "png"} for sample in samples["samples"]]})
     write_interactive_report(coordinates, tsne2, tsne3, test_y, data.info.class_names,
-                             pca.explained_variance_ratio_, path.parent.name, str(path), report)
+                             pca.explained_variance_ratio_, path.parent.name, str(path), report,
+                             samples=samples, clusters=clusters, assignments=assignments)
     np.savez_compressed(output / "test_embeddings.npz", embeddings=test_x, labels=test_y,
                         coordinates=coordinates[:, :2], pca_3d=coordinates,
-                        tsne_2d=tsne2, tsne_3d=tsne3, class_names=np.asarray(data.info.class_names))
+                        tsne_2d=tsne2, tsne_3d=tsne3, cluster_ids=assignments,
+                        sample_ids=np.asarray([s["id"] for s in samples["samples"]]),
+                        class_names=np.asarray(data.info.class_names))
     write_json(output / "projection.json", {
         "checkpoint": str(path), "algorithm": algorithm, "implementation": implementation,
         "encoder": args.ijepa_encoder if algorithm == "ijepa" else "backbone",
         "pca_fit_split": "train", "plot_split": "test", "train_samples": len(train_x),
         "test_samples": len(test_x), "explained_variance_ratio": pca.explained_variance_ratio_.tolist(),
         "image": str(image), "image_3d": str(image3d), "html": str(report),
+        "kmeans": {k: v for k, v in clusters.items() if k != "clusters"},
+        "sample_archive": samples["archive_url"],
         "tsne": {"fit_split": "test", "perplexity": perplexity, "seed": int(cfg.experiment.seed),
                  "preprocessing": "centered PCA to at most 50 dimensions",
                  "image": str(tsne_image), "image_3d": str(tsne_image3)},

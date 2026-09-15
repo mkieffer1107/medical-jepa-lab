@@ -139,6 +139,31 @@ Outputs under `reports/<run>/embeddings/`:
 - `pca_test.png`, `pca_test_3d.png`, `tsne_test.png`, `tsne_test_3d.png`: static plots.
 - `test_embeddings.npz`: raw embeddings, labels, 2D/3D projection coordinates.
 - `projection.json`: checkpoint and projection metadata.
+- `clusters.json`: K-means assignments, class composition, and representative sample indices.
+- `samples.json`: dataset/split/row IDs and source archive URL (without image bytes).
+
+The HTML also includes lossless source PNGs. Hover a point to preview the exact
+sample; click it to pin the inspector and download its PNG. BloodMNIST is loaded
+from the MedMNIST Zenodo archive, not a verified Hugging Face row mapping. Sample IDs
+include dataset, image size, split, and zero-based archive row. Images are embedded
+for offline use. Browser Blob URLs are created lazily in memory and revoked when
+leaving the page; there is no localStorage, IndexedDB, or persistent image cache.
+The downloaded HTML itself retains its embedded images.
+
+K-means runs on full, unscaled test encoder embeddings with Euclidean distance,
+independently of PCA/t-SNE and ground-truth labels. The default is nine clusters:
+
+```bash
+uv run medjepa-plot-embeddings --clusters 9 --cluster-examples 6
+```
+
+Hover/focus a cluster row to gray out the others, click its name to pin selection,
+and use **Show all clusters** to clear it. Each row lists its class mixture and
+shows the nearest and farthest members from its centroid, followed by greedy
+farthest-first examples for diversity. These are examples, not all cluster members;
+use the class counts to see the full mixture. Cluster numbers are run-specific and
+K-means groups need not match apparent t-SNE islands.
+
 
 Clusters in these projections are exploratory, not a measure of downstream accuracy.
 t-SNE cluster sizes and between-cluster distances may be misleading.
