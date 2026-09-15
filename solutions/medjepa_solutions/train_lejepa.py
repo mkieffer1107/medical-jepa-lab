@@ -291,6 +291,10 @@ def main() -> None:
                         "environment": environment_summary(),
                         "epoch": epoch + int(completed),
                         "global_step": global_step,
+                        "training_complete": bool(
+                            (completed and epoch + 1 >= int(cfg.optimization.epochs))
+                            or (args.max_steps is not None and global_step >= args.max_steps)
+                        ),
                         "model": unwrap_ddp(model).state_dict(),
                         "objective": objective.state_dict(),
                         "optimizer": optimizer.state_dict(),

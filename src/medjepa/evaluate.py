@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 from pathlib import Path
 from typing import Protocol
@@ -150,26 +149,19 @@ def _plot_projection(
     output: Path,
 ) -> None:
     figure, axis = plt.subplots(figsize=(10, 8))
-    scatter = axis.scatter(
-        coordinates[:, 0],
-        coordinates[:, 1],
-        c=labels,
-        s=12,
-        alpha=0.72,
-    )
+    colors = plt.get_cmap("tab20" if len(class_names) > 10 else "tab10")
+    for class_id, class_name in enumerate(class_names):
+        selected = labels == class_id
+        if not np.any(selected):
+            continue
+        axis.scatter(
+            coordinates[selected, 0], coordinates[selected, 1],
+            s=12, alpha=0.72, color=colors(class_id), label=class_name,
+        )
     axis.set_title(title)
     axis.set_xlabel("component 1")
     axis.set_ylabel("component 2")
-    handles, _ = scatter.legend_elements(num=len(class_names))
-    if len(handles) == len(class_names):
-        axis.legend(
-            handles,
-            class_names,
-            title="class",
-            loc="center left",
-            bbox_to_anchor=(1.02, 0.5),
-            frameon=False,
-        )
+    axis.legend(title="Class", loc="center left", bbox_to_anchor=(1.02, 0.5), frameon=False)
     figure.tight_layout()
     figure.savefig(output, dpi=180, bbox_inches="tight")
     plt.close(figure)

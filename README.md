@@ -114,6 +114,38 @@ uv run python -m solutions.train_lejepa \
 
 ## Evaluate the representation
 
+### Plot encoder embeddings
+
+From the repo root, create a 2D PCA scatter plot colored by test-set class:
+
+```bash
+uv run medjepa-plot-embeddings
+```
+
+This selects the most recently modified `outputs/**/latest.pt` from a finished run,
+loads its saved configuration, and uses the I-JEPA EMA target encoder (or the LeJEPA
+backbone). It fits PCA on training embeddings and projects test embeddings; class
+labels are used only to color points and name the legend. Progress is printed while
+extracting embeddings, followed by the absolute image path.
+
+Outputs are `reports/<run>/embeddings/pca_test.png`, raw test embeddings and labels
+in `test_embeddings.npz`, and checkpoint/projection metadata in `projection.json`.
+Separation in two dimensions is a visualization, not a measure of downstream accuracy.
+
+```bash
+# Choose any checkpoint explicitly, including an unfinished run:
+uv run medjepa-plot-embeddings --checkpoint outputs/ijepa-bloodmnist-128/latest.pt
+
+# Use another checkpoint directory or adjust evaluation loading:
+uv run medjepa-plot-embeddings --checkpoint-dir /path/to/outputs --batch-size 32 \
+  --override data.num_workers=0
+```
+
+New checkpoints record completion at the configured final epoch or `--max-steps`
+limit. Older checkpoints are recognized as finished when their saved epoch reaches
+the configured epoch count; select older short runs explicitly with `--checkpoint`.
+Use `--ijepa-encoder student` for the context encoder instead of the default target.
+
 First record an untrained-backbone baseline. Blood-cell classes can already be separable by color and gross morphology, so this check prevents a random feature map from getting credit for your JEPA training:
 
 ```bash

@@ -31,6 +31,7 @@ profile = [
 medjepa-train-ijepa = "medjepa.train_ijepa:main"
 medjepa-train-lejepa = "medjepa.train_lejepa:main"
 medjepa-eval = "medjepa.evaluate:main"
+medjepa-plot-embeddings = "medjepa.plot_embeddings:main"
 medjepa-inspect = "medjepa.inspect_batch:main"
 
 [build-system]
