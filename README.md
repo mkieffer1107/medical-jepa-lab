@@ -116,7 +116,7 @@ uv run python -m solutions.train_lejepa \
 
 ### Plot encoder embeddings
 
-From the repo root, create a 2D PCA scatter plot colored by test-set class:
+From the repo root, create 2D and 3D PCA and t-SNE plots colored by test-set class:
 
 ```bash
 uv run medjepa-plot-embeddings
@@ -126,11 +126,22 @@ This selects the most recently modified `outputs/**/latest.pt` from a finished r
 loads its saved configuration, and uses the I-JEPA EMA target encoder (or the LeJEPA
 backbone). It fits PCA on training embeddings and projects test embeddings; class
 labels are used only to color points and name the legend. Progress is printed while
-extracting embeddings, followed by the absolute image path.
+extracting embeddings and fitting projections, followed by all absolute output paths.
+The encoder is frozen; this command does not train the model. t-SNE fits test
+embeddings independently in 2D and 3D, after PCA preprocessing to at most 50
+dimensions; its seed and adaptive perplexity are recorded in the metadata.
 
-Outputs are `reports/<run>/embeddings/pca_test.png`, raw test embeddings and labels
-in `test_embeddings.npz`, and checkpoint/projection metadata in `projection.json`.
-Separation in two dimensions is a visualization, not a measure of downstream accuracy.
+Outputs under `reports/<run>/embeddings/`:
+
+- `embeddings.html`: a standalone offline page with PCA/t-SNE and 2D/3D switches,
+  rotation, zoom, class legend toggles, point tooltips, reset view, and PNG export.
+  Copy this one file to your computer and open it in your browser; no server is needed.
+- `pca_test.png`, `pca_test_3d.png`, `tsne_test.png`, `tsne_test_3d.png`: static plots.
+- `test_embeddings.npz`: raw embeddings, labels, 2D/3D projection coordinates.
+- `projection.json`: checkpoint and projection metadata.
+
+Clusters in these projections are exploratory, not a measure of downstream accuracy.
+t-SNE cluster sizes and between-cluster distances may be misleading.
 
 ```bash
 # Choose any checkpoint explicitly, including an unfinished run:

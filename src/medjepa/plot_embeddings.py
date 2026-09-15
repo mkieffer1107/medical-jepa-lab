@@ -1,4 +1,4 @@
-"""Plot held-out encoder embeddings using PCA fitted on training embeddings."""
+"""Export 2D/3D PCA and t-SNE encoder plots and an offline interactive HTML report."""
 
 from __future__ import annotations
 
@@ -9,9 +9,11 @@ from pathlib import Path
 import numpy as np
 import torch
 from sklearn.decomposition import PCA
+from sklearn.manifold import TSNE
 
 from medjepa.config import _as_config, apply_override, validate_config
 from medjepa.data import build_evaluation_bundle
+from medjepa.embedding_report import plot_3d, write_interactive_report
 from medjepa.evaluate import _load_encoder, _plot_projection, extract_embeddings, resolve_device
 from medjepa.training.checkpoint import load_checkpoint
 from medjepa.utils import ensure_dir, write_json
@@ -48,6 +50,21 @@ def select_checkpoint(root: Path, explicit: str | None) -> tuple[Path, dict]:
     )
 
 
+def tsne_projections(embeddings: np.ndarray, seed: int):
+    if len(embeddings) < 4:
+        raise ValueError("2D/3D t-SNE needs at least four test samples")
+    dimensions = min(50, embeddings.shape[1], len(embeddings) - 1)
+    reduced = PCA(n_components=dimensions, random_state=seed).fit_transform(embeddings)
+    perplexity = min(30.0, (len(embeddings) - 1) / 3)
+    results = []
+    for dimension in (2, 3):
+        LOGGER.info("Fitting %dD t-SNE on %d test embeddings (perplexity=%.2f)", dimension, len(embeddings), perplexity)
+        results.append(TSNE(n_components=dimension, perplexity=perplexity,
+                            init="pca", learning_rate="auto", random_state=seed,
+                            verbose=1).fit_transform(reduced))
+    return *results, perplexity
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkpoint", help="Explicit checkpoint; otherwise newest finished run")
@@ -81,28 +98,46 @@ def main() -> None:
     data = build_evaluation_bundle(cfg, batch_size=args.batch_size)
     train_x, _ = extract_embeddings(encoder, data.train_loader, device, args.max_train, "Train embeddings (PCA fit)")
     test_x, test_y = extract_embeddings(encoder, data.test_loader, device, args.max_test, "Test embeddings (plot)")
-    if min(train_x.shape) < 2:
-        raise ValueError("PCA needs at least two training samples and two embedding dimensions")
+    if min(train_x.shape) < 3:
+        raise ValueError("PCA needs at least three training samples and three embedding dimensions")
     LOGGER.info("Fitting PCA on %d training embeddings; projecting %d test embeddings", len(train_x), len(test_x))
-    pca = PCA(n_components=2, random_state=int(cfg.experiment.seed))
+    pca = PCA(n_components=3, random_state=int(cfg.experiment.seed))
     pca.fit(train_x)
     coordinates = pca.transform(test_x)
     output = ensure_dir(Path(args.output_dir or Path("reports") / path.parent.name / "embeddings")).resolve()
     image = output / "pca_test.png"
-    explained = float(pca.explained_variance_ratio_.sum())
+    explained = float(pca.explained_variance_ratio_[:2].sum())
     _plot_projection(coordinates, test_y, data.info.class_names,
                      f"{algorithm.upper()} | {data.info.name} test embeddings\nPCA — {explained:.1%} variance explained", image)
+    image3d = output / "pca_test_3d.png"
+    plot_3d(coordinates, test_y, data.info.class_names,
+            f"{algorithm.upper()} | test embeddings | 3D PCA", image3d)
+    tsne2, tsne3, perplexity = tsne_projections(test_x, int(cfg.experiment.seed))
+    tsne_image = output / "tsne_test.png"
+    tsne_image3 = output / "tsne_test_3d.png"
+    _plot_projection(tsne2, test_y, data.info.class_names,
+                     f"{algorithm.upper()} | test embeddings | t-SNE", tsne_image)
+    plot_3d(tsne3, test_y, data.info.class_names,
+            f"{algorithm.upper()} | test embeddings | 3D t-SNE", tsne_image3, prefix="t-SNE")
+    report = output / "embeddings.html"
+    write_interactive_report(coordinates, tsne2, tsne3, test_y, data.info.class_names,
+                             pca.explained_variance_ratio_, path.parent.name, str(path), report)
     np.savez_compressed(output / "test_embeddings.npz", embeddings=test_x, labels=test_y,
-                        coordinates=coordinates, class_names=np.asarray(data.info.class_names))
+                        coordinates=coordinates[:, :2], pca_3d=coordinates,
+                        tsne_2d=tsne2, tsne_3d=tsne3, class_names=np.asarray(data.info.class_names))
     write_json(output / "projection.json", {
         "checkpoint": str(path), "algorithm": algorithm, "implementation": implementation,
         "encoder": args.ijepa_encoder if algorithm == "ijepa" else "backbone",
         "pca_fit_split": "train", "plot_split": "test", "train_samples": len(train_x),
         "test_samples": len(test_x), "explained_variance_ratio": pca.explained_variance_ratio_.tolist(),
-        "image": str(image),
+        "image": str(image), "image_3d": str(image3d), "html": str(report),
+        "tsne": {"fit_split": "test", "perplexity": perplexity, "seed": int(cfg.experiment.seed),
+                 "preprocessing": "centered PCA to at most 50 dimensions",
+                 "image": str(tsne_image), "image_3d": str(tsne_image3)},
     })
     LOGGER.info("Saved embeddings: %s", output / "test_embeddings.npz")
-    print(f"Plot saved to: {image}", flush=True)
+    for artifact in (image, image3d, tsne_image, tsne_image3, report):
+        print(f"Saved: {artifact}", flush=True)
 
 
 if __name__ == "__main__":
